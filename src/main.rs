@@ -1,6 +1,6 @@
 use csv::ReaderBuilder;
 use csv::WriterBuilder;
-use fantasy::screenshot::capture;
+use headless_chrome::{Browser, protocol::page::ScreenshotFormat};
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::fs::File;
@@ -75,7 +75,7 @@ fn main() {
                 .text()
                 .unwrap();
 
-            let screenshot_result = capture(&line, &screenshot_file);
+            let screenshot_result = capture_screenshot(&line, &screenshot_file);
             let download_url = match screenshot_result {
                 Ok(_) => upload_screenshot(&screenshot_file, &github_token),
                 Err(_) => None,
@@ -163,9 +163,19 @@ fn main() {
                 }
             }
         }
-
-        std::fs::remove_file(IN_FILE).unwrap();
     }
+
+    std::fs::remove_file(IN_FILE).unwrap();
+}
+
+fn capture_screenshot(url: &str, file_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let browser = Browser::default()?;
+    let tab = browser.wait_for_initial_tab()?;
+    tab.navigate_to(url)?;
+    tab.wait_until_navigated()?;
+    let png_data = tab.capture_screenshot(ScreenshotFormat::PNG)?;
+    std::fs::write(file_path, png_data)?;
+    Ok(())
 }
 
 fn upload_screenshot(screenshot_file: &std::path::Path, github_token: &str) -> Option<String> {
