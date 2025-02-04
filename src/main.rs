@@ -1,6 +1,6 @@
 use csv::ReaderBuilder;
 use csv::WriterBuilder;
-use headless_chrome::{Browser, protocol::page::ScreenshotFormat};
+use headless_chrome::{Browser, LaunchOptionsBuilder, protocol::page::ScreenshotFormat};
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::fs::File;
@@ -169,11 +169,15 @@ fn main() {
 }
 
 fn capture_screenshot(url: &str, file_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    let browser = Browser::default()?;
-    let tab = browser.wait_for_initial_tab()?;
+    let options = LaunchOptionsBuilder::default()
+        .headless(true)
+        .build()
+        .unwrap();
+    let browser = Browser::new(options)?;
+    let tab = browser.new_tab()?;
     tab.navigate_to(url)?;
     tab.wait_until_navigated()?;
-    let png_data = tab.capture_screenshot(ScreenshotFormat::PNG)?;
+    let png_data = tab.capture_screenshot(ScreenshotFormat::PNG, None, true)?;
     std::fs::write(file_path, png_data)?;
     Ok(())
 }
