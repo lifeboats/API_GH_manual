@@ -117,7 +117,11 @@ fn main() {
             } else {
                 match serde_json::from_str::<Value>(&existing_issue) {
                     Ok(json) => {
-                        let issue_url = json["url"].as_str().unwrap().to_string();
+                        if let Some(existing_issue) = existing_issue {
+                            tx.send((line, body, existing_issue)).unwrap();
+                        } else {
+                            eprintln!("Error: existing_issue is None");
+                        }
                         // Use issue_url
                     }
                     Err(e) => {
@@ -165,7 +169,11 @@ fn main() {
                 d_records
             );
 
-            tx.send((line, body, existing_issue)).unwrap();
+            if !existing_issue.is_empty() {
+                tx.send((line, body, existing_issue)).unwrap();
+            } else {
+                eprintln!("Error: existing_issue is empty");
+            }
         });
     }
 
@@ -175,61 +183,45 @@ fn main() {
 
     for (line, body, existing_issue) in rx {
         if !existing_issue.is_empty() {
-            let issue_url = match serde_json::from_str::<Value>(&existing_issue) {
-                Ok(json) => json["url"].as_str().unwrap().to_string(),
-                Err(e) => {
-                    eprintln!("Error parsing existing issue JSON: {}", e);
-                    continue;
-                }
-            };
-
-            if let Err(e) = Client::new()
+            let issue_url = serde_json::from_str::<Value>(&existing_issue)
+                .unwrap()["url"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            Client::new()
                 .post(&format!("{issue_url}/comments"))
                 .bearer_auth(&github_token)
                 .header("Accept", "application/vnd.github+json")
                 .json(&serde_json::json!({ "body": body }))
                 .send()
-            {
-                eprintln!("Error sending comment to issue: {}", e);
-            }
+                .unwrap();
         } else {
             let json_body = serde_json::json!({
-                "title": line,
-                "body": body,
-                "labels": ["NSFW Adult Material"],
-                "milestone": 4,
-                "state": "closed",
-                "state_reason": "completed"
-            });
+        "title": line,
+        "body": body,
+        "labels": ["NSFW Adult Material"],
+        "milestone": 4,
+        "state": "closed",
+        "state_reason": "completed"
+    });
 
             for _ in 0..MAX_RETRIES {
-                match Client::new()
+                let response = Client::new()
                     .post(&format!("https://api.github.com/repos/{REPO}/issues"))
-                    .header("Accept", "application/vnd.github+json")
                     .bearer_auth(&github_token)
+                    .header("Accept", "application/vnd.github+json")
                     .json(&json_body)
                     .send()
-                {
-                    Ok(response) => {
-                        if response.status().is_success() {
-                            match response.json::<Value>() {
-                                Ok(response_json) => {
-                                    let title = response_json["title"].as_str().unwrap().to_string();
-                                    let html_url = response_json["html_url"].as_str().unwrap().to_string();
-                                    writer.write_record(&[title, html_url]).unwrap();
-                                    break;
-                                }
-                                Err(e) => eprintln!("Error parsing response JSON: {}", e),
-                            }
-                        } else {
-                            eprintln!("Failed to create issue: {}", response.status());
-                            thread::sleep(RETRY_DELAY);
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Error sending request to create issue: {}", e);
-                        thread::sleep(RETRY_DELAY);
-                    }
+                    .unwrap();
+
+                if response.status().is_success() {
+                    let response_json: Value = response.json().unwrap();
+                    let title = response_json["title"].as_str().unwrap().to_string();
+                    let html_url = response_json["html_url"].as_str().unwrap().to_string();
+                    writer.write_record(&[title, html_url]).unwrap();
+                    break;
+                } else {
+                    thread::sleep(RETRY_DELAY);
                 }
             }
         }
