@@ -112,25 +112,6 @@ fn main() {
                 .text()
                 .unwrap();
 
-            if existing_issue.is_empty() {
-                eprintln!("Received empty response for existing issues.");
-            } else {
-                match serde_json::from_str::<Value>(&existing_issue) {
-                    Ok(json) => {
-                        if let Some(existing_issue) = existing_issue {
-                            tx.send((line, body, existing_issue)).unwrap();
-                        } else {
-                            eprintln!("Error: existing_issue is None");
-                        }
-                        // Use issue_url
-                    }
-                    Err(e) => {
-                        eprintln!("Error parsing existing issue JSON: {}", e);
-                        eprintln!("Response: {}", existing_issue);
-                    }
-                }
-            }
-
             // Validate and sanitize the line input before using it in path value creation
             let sanitized_line = sanitize_input(&line);
 
@@ -142,26 +123,26 @@ fn main() {
 
             let body = format!(
                 "### Comments\n\n\
-                Previously committed an approved domain, used for serving Porn contents\n\n\
-                ### Domain\n\n\
-                ```CSV\n{line}\n```\n\n\
-                ### Wildcard domain records\n\n\
-                ```CSV\n{line}|adult\n```\n\n\
-                ### Sub-Domain records\n\n\
-                ```CSV\nnull\n```\n\n\
-                ### Hosts (RFC:952) specific records, not used by DNS RPZ firewalls\n\n\
-                ```CSV\nnull\n```\n\n\
-                ### Safe Search records\n\n\
-                ```CSV\nnull\n```\n\n\
-                ### Screenshots\n\n\
-                <details><summary>Screenshot (click to expand)</summary>\n\n\
-                {}\n\n</details>\n\n\
-                ### Links to external sources\n\n\
-                {}\n\n\
-                ### Name servers\n\n\
-                ```text\n{}\n```\n\n\
-                ### logs from uBlock Origin\n\n\
-                N/A",
+            Previously committed an approved domain, used for serving Porn contents\n\n\
+            ### Domain\n\n\
+            ```CSV\n{line}\n```\n\n\
+            ### Wildcard domain records\n\n\
+            ```CSV\n{line}|adult\n```\n\n\
+            ### Sub-Domain records\n\n\
+            ```CSV\nnull\n```\n\n\
+            ### Hosts (RFC:952) specific records, not used by DNS RPZ firewalls\n\n\
+            ```CSV\nnull\n```\n\n\
+            ### Safe Search records\n\n\
+            ```CSV\nnull\n```\n\n\
+            ### Screenshots\n\n\
+            <details><summary>Screenshot (click to expand)</summary>\n\n\
+            {}\n\n</details>\n\n\
+            ### Links to external sources\n\n\
+            {}\n\n\
+            ### Name servers\n\n\
+            ```text\n{}\n```\n\n\
+            ### logs from uBlock Origin\n\n\
+            N/A",
                 download_url
                     .map(|url| format!("![Screenshot of {line} taken by My Privacy DNS ©]({url})"))
                     .unwrap_or_else(|| "N/A".to_string()),
@@ -175,6 +156,106 @@ fn main() {
                 eprintln!("Error: existing_issue is empty");
             }
         });
+    }
+
+    drop(tx.clone());
+
+    let mut writer = WriterBuilder::new().from_path(out_file).unwrap();
+
+    for (line, body, existing_issue) in rx {
+        if !existing_issue.is_empty() {
+            let issue_url = serde_json::from_str::<Value>(&existing_issue)
+                .unwrap()["url"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            Client::new()
+                .post(&format!("{issue_url}/comments"))
+                .bearer_auth(&github_token)
+                .header("Accept", "application/vnd.github+json")
+                .json(&serde_json::json!({ "body": body }))
+                .send()
+                .unwrap();
+        } else {
+            let json_body = serde_json::json!({
+            "title": line,
+            "body": body,
+            "labels": ["NSFW Adult Material"],
+            "milestone": 4,
+            "state": "closed",
+            "state_reason": "completed"
+        });
+
+            for _ in 0..MAX_RETRIES {
+                let response = Client::new()
+                    .post(&format!("https://api.github.com/repos/{REPO}/issues"))
+                    .bearer_auth(&github_token)
+                    .header("Accept", "application/vnd.github+json")
+                    .json(&json_body)
+                    .send()
+                    .unwrap();
+
+                if response.status().is_success() {
+                    let response_json: Value = response.json().unwrap();
+                    let title = response_json["title"].as_str().unwrap().to_string();
+                    let html_url = response_json["html_url"].as_str().unwrap().to_string();
+                    writer.write_record(&[title, html_url]).unwrap();
+                    break;
+                } else {
+                    thread::sleep(RETRY_DELAY);
+                }
+            }
+        }
+    }
+
+    drop(tx);
+
+    let mut writer = WriterBuilder::new().from_path(out_file).unwrap();
+
+    for (line, body, existing_issue) in rx {
+        if !existing_issue.is_empty() {
+            let issue_url = serde_json::from_str::<Value>(&existing_issue)
+                .unwrap()["url"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            Client::new()
+                .post(&format!("{issue_url}/comments"))
+                .bearer_auth(&github_token)
+                .header("Accept", "application/vnd.github+json")
+                .json(&serde_json::json!({ "body": body }))
+                .send()
+                .unwrap();
+        } else {
+            let json_body = serde_json::json!({
+            "title": line,
+            "body": body,
+            "labels": ["NSFW Adult Material"],
+            "milestone": 4,
+            "state": "closed",
+            "state_reason": "completed"
+        });
+
+            for _ in 0..MAX_RETRIES {
+                let response = Client::new()
+                    .post(&format!("https://api.github.com/repos/{REPO}/issues"))
+                    .bearer_auth(&github_token)
+                    .header("Accept", "application/vnd.github+json")
+                    .json(&json_body)
+                    .send()
+                    .unwrap();
+
+                if response.status().is_success() {
+                    let response_json: Value = response.json().unwrap();
+                    let title = response_json["title"].as_str().unwrap().to_string();
+                    let html_url = response_json["html_url"].as_str().unwrap().to_string();
+                    writer.write_record(&[title, html_url]).unwrap();
+                    break;
+                } else {
+                    thread::sleep(RETRY_DELAY);
+                }
+            }
+        }
     }
 
     drop(tx);
