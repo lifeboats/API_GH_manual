@@ -9,6 +9,8 @@ use std::sync::mpsc::channel;
 use std::thread;
 use std::time::Duration;
 use std::env;
+use std::path::PathBuf;
+use regex::Regex;
 
 const IN_FILE: &str = "/home/spirillen/Downloads/newIssues.csv";
 const OUT_FILE: &str = "/home/spirillen/Downloads/issues.csv";
@@ -40,6 +42,7 @@ fn main() {
         let tx = tx.clone();
 
         let github_token = github_token.clone();
+        let screenshot_file = screenshot_file.clone(); // Clone the screenshot_file to avoid moving the value
         thread::spawn(move || {
             let d_records = std::process::Command::new("dig")
                 .arg("+short")
@@ -75,7 +78,10 @@ fn main() {
                 .text()
                 .unwrap();
 
-            let screenshot_result = capture_screenshot(&line, &screenshot_file);
+            // Validate and sanitize the line input before using it in path value creation
+            let sanitized_line = sanitize_input(&line);
+
+            let screenshot_result = capture_screenshot(&sanitized_line, &screenshot_file);
             let download_url = match screenshot_result {
                 Ok(_) => upload_screenshot(&screenshot_file, &github_token),
                 Err(_) => None,
@@ -168,7 +174,7 @@ fn main() {
     std::fs::remove_file(IN_FILE).unwrap();
 }
 
-fn capture_screenshot(url: &str, file_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+fn capture_screenshot(url: &str, file_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let options = LaunchOptionsBuilder::default()
         .headless(true)
         .build()
@@ -177,12 +183,24 @@ fn capture_screenshot(url: &str, file_path: &std::path::Path) -> Result<(), Box<
     let tab = browser.new_tab()?;
     tab.navigate_to(url)?;
     tab.wait_until_navigated()?;
-    let png_data = tab.capture_screenshot(headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png, None)?;
+    let viewport = headless_chrome::protocol::cdp::Page::Viewport {
+        x: 0.0,
+        y: 0.0,
+        width: 800.0,
+        height: 600.0,
+        scale: 1.0,
+    };
+    let png_data = tab.capture_screenshot(
+        headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
+        Some(viewport), // Option<Viewport>
+        None, // Option<u8> for quality
+        true // bool
+    )?;
     std::fs::write(file_path, png_data)?;
     Ok(())
 }
 
-fn upload_screenshot(screenshot_file: &std::path::Path, github_token: &str) -> Option<String> {
+fn upload_screenshot(screenshot_file: &PathBuf, github_token: &str) -> Option<String> {
     for _ in 0..MAX_RETRIES {
         let upload_response = Client::new()
             .put(&format!(
@@ -215,4 +233,9 @@ fn get_github_token(config_path: &str) -> Result<String, Box<dyn std::error::Err
     let json: Value = serde_json::from_str(&contents)?;
     let token = json["GITHUB_TOKEN"].as_str().ok_or("GITHUB_TOKEN not found")?.to_string();
     Ok(token)
+}
+
+fn sanitize_input(input: &str) -> String {
+    let re = Regex::new(r"[^a-zA-Z0-9]").unwrap();
+    re.replace_all(input, "_").to_string()
 }
