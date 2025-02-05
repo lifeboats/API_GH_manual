@@ -50,19 +50,31 @@ fn main() {
     // Load GITHUB_TOKEN from config file
     let home_dir = env::var("HOME").expect("Could not find home directory");
     let config_path = format!("{}/.config/myPrivacyDNS/config.user.json", home_dir);
-    let github_token = get_github_token(&config_path).expect("Failed to retrieve GITHUB_TOKEN");
+    let github_token = match get_github_token(&config_path) {
+        Ok(token) => token,
+        Err(e) => {
+            eprintln!("Failed to retrieve GITHUB_TOKEN: {}", e);
+            return;
+        }
+    };
 
     // Create output file with header if it doesn't exist
-    let mut writer = WriterBuilder::new().from_path(&out_file).unwrap_or_else(|_| {
-        eprintln!("Could not create output file: {}", out_file);
-        std::process::exit(1);
-    });
-    writer.write_record(&["Title", "Issue link"]).unwrap();
+    let mut writer = match WriterBuilder::new().from_path(&out_file) {
+        Ok(writer) => writer,
+        Err(_) => {
+            eprintln!("Could not create output file: {}", out_file);
+            std::process::exit(1);
+        }
+    };
+    writer.write_record(&["Title", "Issue link"]).expect("Failed to write header");
 
-    let mut reader = ReaderBuilder::new().from_path(&in_file).unwrap_or_else(|_| {
-        eprintln!("Could not open input file: {}", in_file);
-        std::process::exit(1);
-    });
+    let mut reader = match ReaderBuilder::new().from_path(&in_file) {
+        Ok(reader) => reader,
+        Err(_) => {
+            eprintln!("Could not open input file: {}", in_file);
+            std::process::exit(1);
+        }
+    };
     let records: Vec<_> = reader.records().collect();
 
     // Create a temporary file for the screenshot
@@ -71,14 +83,26 @@ fn main() {
     let (tx, rx) = channel();
 
     for record in records {
-        let record = record.unwrap();
-        let line = record.get(0).unwrap().to_string();
+        let record = match record {
+            Ok(rec) => rec,
+            Err(e) => {
+                eprintln!("Failed to read record: {}", e);
+                continue;
+            }
+        };
+        let line = match record.get(0) {
+            Some(line) => line.to_string(),
+            None => {
+                eprintln!("Failed to get line from record");
+                continue;
+            }
+        };
         let tx = tx.clone();
 
         let github_token = github_token.clone();
         let screenshot_file = screenshot_file.clone(); // Clone the screenshot_file to avoid moving the value
         thread::spawn(move || {
-            let d_records = std::process::Command::new("dig")
+            let d_records = match std::process::Command::new("dig")
                 .arg("+short")
                 .arg("+tls")
                 .arg("@91.239.100.100")
@@ -86,21 +110,35 @@ fn main() {
                 .arg("NS")
                 .arg(&line)
                 .output()
-                .expect("Failed to execute dig")
-                .stdout;
-            let d_records = String::from_utf8(d_records).unwrap();
+            {
+                Ok(output) => String::from_utf8(output.stdout).expect("Failed to convert output to string"),
+                Err(e) => {
+                    eprintln!("Failed to execute dig: {}", e);
+                    return;
+                }
+            };
 
-            let known_issues = Client::new()
+            let known_issues = match Client::new()
                 .get(&format!(
                     "https://api.github.com/search/issues?q={line}+type:issue&sort=indexed"
                 ))
                 .header("Accept", "application/vnd.github.text-match+json")
                 .send()
-                .unwrap()
-                .text()
-                .unwrap();
+            {
+                Ok(resp) => match resp.text() {
+                    Ok(text) => text,
+                    Err(e) => {
+                        eprintln!("Failed to get response text: {}", e);
+                        return;
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Failed to send request: {}", e);
+                    return;
+                }
+            };
 
-            let existing_issue = Client::new()
+            let existing_issue = match Client::new()
                 .get(&format!(
                     "https://api.github.com/search/issues?q={line}%20in:title%20type:issue%20repo:{REPO}"
                 ))
@@ -108,9 +146,19 @@ fn main() {
                 .header("User-Agent", "MyNewApp")
                 .bearer_auth(&github_token)
                 .send()
-                .unwrap()
-                .text()
-                .unwrap();
+            {
+                Ok(resp) => match resp.text() {
+                    Ok(text) => text,
+                    Err(e) => {
+                        eprintln!("Failed to get response text: {}", e);
+                        return;
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Failed to send request: {}", e);
+                    return;
+                }
+            };
 
             // Validate and sanitize the line input before using it in path value creation
             let sanitized_line = sanitize_input(&line);
@@ -123,26 +171,26 @@ fn main() {
 
             let body = format!(
                 "### Comments\n\n\
-            Previously committed an approved domain, used for serving Porn contents\n\n\
-            ### Domain\n\n\
-            ```CSV\n{line}\n```\n\n\
-            ### Wildcard domain records\n\n\
-            ```CSV\n{line}|adult\n```\n\n\
-            ### Sub-Domain records\n\n\
-            ```CSV\nnull\n```\n\n\
-            ### Hosts (RFC:952) specific records, not used by DNS RPZ firewalls\n\n\
-            ```CSV\nnull\n```\n\n\
-            ### Safe Search records\n\n\
-            ```CSV\nnull\n```\n\n\
-            ### Screenshots\n\n\
-            <details><summary>Screenshot (click to expand)</summary>\n\n\
-            {}\n\n</details>\n\n\
-            ### Links to external sources\n\n\
-            {}\n\n\
-            ### Name servers\n\n\
-            ```text\n{}\n```\n\n\
-            ### logs from uBlock Origin\n\n\
-            N/A",
+                Previously committed an approved domain, used for serving Porn contents\n\n\
+                ### Domain\n\n\
+                ```CSV\n{line}\n```\n\n\
+                ### Wildcard domain records\n\n\
+                ```CSV\n{line}|adult\n```\n\n\
+                ### Sub-Domain records\n\n\
+                ```CSV\nnull\n```\n\n\
+                ### Hosts (RFC:952) specific records, not used by DNS RPZ firewalls\n\n\
+                ```CSV\nnull\n```\n\n\
+                ### Safe Search records\n\n\
+                ```CSV\nnull\n```\n\n\
+                ### Screenshots\n\n\
+                <details><summary>Screenshot (click to expand)</summary>\n\n\
+                {}\n\n</details>\n\n\
+                ### Links to external sources\n\n\
+                {}\n\n\
+                ### Name servers\n\n\
+                ```text\n{}\n```\n\n\
+                ### logs from uBlock Origin\n\n\
+                N/A",
                 download_url
                     .map(|url| format!("![Screenshot of {line} taken by My Privacy DNS ©]({url})"))
                     .unwrap_or_else(|| "N/A".to_string()),
@@ -151,33 +199,56 @@ fn main() {
             );
 
             if !existing_issue.is_empty() {
-                tx.send((line, body, existing_issue)).unwrap();
+                if let Err(e) = tx.send((line, body, existing_issue)) {
+                    eprintln!("Failed to send data: {}", e);
+                }
             } else {
                 eprintln!("Error: existing_issue is empty");
             }
         });
     }
 
-    drop(tx.clone());
+    drop(tx);
 
-    let mut writer = WriterBuilder::new().from_path(out_file).unwrap();
+    let mut writer = match WriterBuilder::new().from_path(out_file) {
+        Ok(writer) => writer,
+        Err(e) => {
+            eprintln!("Failed to create writer: {}", e);
+            return;
+        }
+    };
 
     for (line, body, existing_issue) in rx {
-        if !existing_issue.is_empty() {
-            let issue_url = serde_json::from_str::<Value>(&existing_issue)
-                .unwrap()["url"]
-                .as_str()
-                .unwrap()
-                .to_string();
-            Client::new()
-                .post(&format!("{issue_url}/comments"))
-                .bearer_auth(&github_token)
-                .header("Accept", "application/vnd.github+json")
-                .json(&serde_json::json!({ "body": body }))
-                .send()
-                .unwrap();
-        } else {
-            let json_body = serde_json::json!({
+        handle_issue(line, body, existing_issue, &github_token, &mut writer);
+    }
+}
+
+fn handle_issue(line: String, body: String, existing_issue: String, github_token: &str, writer: &mut csv::Writer<std::fs::File>) {
+    if !existing_issue.is_empty() {
+        let issue_url = match serde_json::from_str::<Value>(&existing_issue) {
+            Ok(json) => match json["url"].as_str() {
+                Some(url) => url.to_string(),
+                None => {
+                    eprintln!("Failed to get URL from json: {}", existing_issue);
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!("Failed to parse existing issue JSON: {}, Error: {}", existing_issue, e);
+                return;
+            }
+        };
+        if let Err(e) = Client::new()
+            .post(&format!("{issue_url}/comments"))
+            .bearer_auth(&github_token)
+            .header("Accept", "application/vnd.github+json")
+            .json(&serde_json::json!({ "body": body }))
+            .send()
+        {
+            eprintln!("Failed to post comment: {}", e);
+        }
+    } else {
+        let json_body = serde_json::json!({
             "title": line,
             "body": body,
             "labels": ["NSFW Adult Material"],
@@ -186,138 +257,60 @@ fn main() {
             "state_reason": "completed"
         });
 
-            for _ in 0..MAX_RETRIES {
-                let response = Client::new()
-                    .post(&format!("https://api.github.com/repos/{REPO}/issues"))
-                    .bearer_auth(&github_token)
-                    .header("Accept", "application/vnd.github+json")
-                    .json(&json_body)
-                    .send()
-                    .unwrap();
-
-                if response.status().is_success() {
-                    let response_json: Value = response.json().unwrap();
-                    let title = response_json["title"].as_str().unwrap().to_string();
-                    let html_url = response_json["html_url"].as_str().unwrap().to_string();
-                    writer.write_record(&[title, html_url]).unwrap();
-                    break;
-                } else {
-                    thread::sleep(RETRY_DELAY);
-                }
-            }
-        }
-    }
-
-    drop(tx);
-
-    let mut writer = WriterBuilder::new().from_path(out_file).unwrap();
-
-    for (line, body, existing_issue) in rx {
-        if !existing_issue.is_empty() {
-            let issue_url = serde_json::from_str::<Value>(&existing_issue)
-                .unwrap()["url"]
-                .as_str()
-                .unwrap()
-                .to_string();
-            Client::new()
-                .post(&format!("{issue_url}/comments"))
+        for _ in 0..MAX_RETRIES {
+            match Client::new()
+                .post(&format!("https://api.github.com/repos/{REPO}/issues"))
                 .bearer_auth(&github_token)
                 .header("Accept", "application/vnd.github+json")
-                .json(&serde_json::json!({ "body": body }))
+                .json(&json_body)
                 .send()
-                .unwrap();
-        } else {
-            let json_body = serde_json::json!({
-            "title": line,
-            "body": body,
-            "labels": ["NSFW Adult Material"],
-            "milestone": 4,
-            "state": "closed",
-            "state_reason": "completed"
-        });
-
-            for _ in 0..MAX_RETRIES {
-                let response = Client::new()
-                    .post(&format!("https://api.github.com/repos/{REPO}/issues"))
-                    .bearer_auth(&github_token)
-                    .header("Accept", "application/vnd.github+json")
-                    .json(&json_body)
-                    .send()
-                    .unwrap();
-
-                if response.status().is_success() {
-                    let response_json: Value = response.json().unwrap();
-                    let title = response_json["title"].as_str().unwrap().to_string();
-                    let html_url = response_json["html_url"].as_str().unwrap().to_string();
-                    writer.write_record(&[title, html_url]).unwrap();
-                    break;
-                } else {
+            {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        match response.json::<Value>() {
+                            Ok(response_json) => {
+                                let title = match response_json["title"].as_str() {
+                                    Some(title) => title.to_string(),
+                                    None => {
+                                        eprintln!("Failed to get title from response JSON: {}", response_json);
+                                        continue;
+                                    }
+                                };
+                                let html_url = match response_json["html_url"].as_str() {
+                                    Some(url) => url.to_string(),
+                                    None => {
+                                        eprintln!("Failed to get html_url from response JSON: {}", response_json);
+                                        continue;
+                                    }
+                                };
+                                if let Err(e) = writer.write_record(&[title, html_url]) {
+                                    eprintln!("Failed to write record: {}", e);
+                                }
+                                break;
+                            }
+                            Err(e) => {
+                                let response_text = response.text().unwrap_or_else(|_| "Error retrieving response text".to_string());
+                                eprintln!("Failed to parse response JSON: {}, Error: {}", response_text, e);
+                                continue;
+                            }
+                        }
+                    } else {
+                        thread::sleep(RETRY_DELAY);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to send request: {}", e);
                     thread::sleep(RETRY_DELAY);
                 }
             }
         }
     }
-
-    drop(tx);
-
-    let mut writer = WriterBuilder::new().from_path(out_file).unwrap();
-
-    for (line, body, existing_issue) in rx {
-        if !existing_issue.is_empty() {
-            let issue_url = serde_json::from_str::<Value>(&existing_issue)
-                .unwrap()["url"]
-                .as_str()
-                .unwrap()
-                .to_string();
-            Client::new()
-                .post(&format!("{issue_url}/comments"))
-                .bearer_auth(&github_token)
-                .header("Accept", "application/vnd.github+json")
-                .json(&serde_json::json!({ "body": body }))
-                .send()
-                .unwrap();
-        } else {
-            let json_body = serde_json::json!({
-        "title": line,
-        "body": body,
-        "labels": ["NSFW Adult Material"],
-        "milestone": 4,
-        "state": "closed",
-        "state_reason": "completed"
-    });
-
-            for _ in 0..MAX_RETRIES {
-                let response = Client::new()
-                    .post(&format!("https://api.github.com/repos/{REPO}/issues"))
-                    .bearer_auth(&github_token)
-                    .header("Accept", "application/vnd.github+json")
-                    .json(&json_body)
-                    .send()
-                    .unwrap();
-
-                if response.status().is_success() {
-                    let response_json: Value = response.json().unwrap();
-                    let title = response_json["title"].as_str().unwrap().to_string();
-                    let html_url = response_json["html_url"].as_str().unwrap().to_string();
-                    writer.write_record(&[title, html_url]).unwrap();
-                    break;
-                } else {
-                    thread::sleep(RETRY_DELAY);
-                }
-            }
-        }
-    }
-
-    // if !records.is_empty() {
-    //     std::fs::remove_file(in_file).unwrap();
-    // }
 }
 
 fn capture_screenshot(url: &str, file_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let options = LaunchOptionsBuilder::default()
         .headless(true)
-        .build()
-        .unwrap();
+        .build()?;
     let browser = Browser::new(options)?;
     let tab = browser.new_tab()?;
     tab.navigate_to(url)?;
@@ -334,25 +327,25 @@ fn capture_screenshot(url: &str, file_path: &PathBuf) -> Result<(), Box<dyn std:
 
 fn upload_screenshot(screenshot_file: &PathBuf, github_token: &str) -> Option<String> {
     for _ in 0..MAX_RETRIES {
-        let upload_response = Client::new()
+        match Client::new()
             .put(&format!(
                 "https://uploads.github.com/repos/{REPO}/contents/screenshots/{}?ref=master",
-                screenshot_file.file_name().unwrap().to_str().unwrap()
+                screenshot_file.file_name()?.to_str()?
             ))
             .header("Authorization", format!("Bearer {}", github_token))
             .header("Content-Type", "application/octet-stream")
-            .body(std::fs::read(screenshot_file).unwrap())
+            .body(std::fs::read(screenshot_file).ok()?)
             .send()
-            .unwrap();
-
-        if upload_response.status().is_success() {
-            let response_json: Value = upload_response.json().unwrap();
-            return Some(response_json["content"]["download_url"]
-                .as_str()
-                .unwrap()
-                .to_string());
-        } else {
-            thread::sleep(RETRY_DELAY);
+        {
+            Ok(upload_response) => {
+                if upload_response.status().is_success() {
+                    return upload_response.json::<Value>().ok()?.get("content")?.get("download_url")?.as_str().map(String::from);
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to upload screenshot: {}", e);
+                thread::sleep(RETRY_DELAY);
+            }
         }
     }
     None
@@ -366,7 +359,10 @@ fn get_github_token(config_path: &str) -> Result<String, Box<dyn std::error::Err
         return Err("Empty JSON content".into());
     }
     let json: Value = serde_json::from_str(&contents)?;
-    let token = json["GITHUB_TOKEN"].as_str().ok_or("GITHUB_TOKEN not found")?.to_string();
+    let token = json["GITHUB_TOKEN"]
+        .as_str()
+        .ok_or("GITHUB_TOKEN not found")?
+        .to_string();
     Ok(token)
 }
 
