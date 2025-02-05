@@ -26,22 +26,22 @@ fn main() {
             .short('i')
             .long("infile")
             .value_name("FILE")
-            .about("Sets the input file")
+            .help("Sets the input file")
             .takes_value(true))
         .arg(Arg::new("outfile")
             .short('o')
             .long("outfile")
             .value_name("FILE")
-            .about("Sets the output file")
+            .help("Sets the output file")
             .takes_value(true))
         .arg(Arg::new("version")
             .short('v')
             .long("version")
-            .about("Prints version information"))
+            .help("Prints version information"))
         .arg(Arg::new("help")
             .short('h')
             .long("help")
-            .about("Prints help information"))
+            .help("Prints help information"))
         .get_matches();
 
     let in_file = matches.value_of("infile").unwrap_or("data/newIssues.csv");
@@ -154,52 +154,65 @@ fn main() {
 
     for (line, body, existing_issue) in rx {
         if !existing_issue.is_empty() {
-            let issue_url = serde_json::from_str::<Value>(&existing_issue)
-                .unwrap()["url"]
-                .as_str()
-                .unwrap()
-                .to_string();
-            Client::new()
+            let issue_url = match serde_json::from_str::<Value>(&existing_issue) {
+                Ok(json) => json["url"].as_str().unwrap().to_string(),
+                Err(e) => {
+                    eprintln!("Error parsing existing issue JSON: {}", e);
+                    continue;
+                }
+            };
+
+            if let Err(e) = Client::new()
                 .post(&format!("{issue_url}/comments"))
                 .header("Authorization", format!("Bearer {}", github_token))
                 .header("Accept", "application/vnd.github+json")
                 .json(&serde_json::json!({ "body": body }))
                 .send()
-                .unwrap();
+            {
+                eprintln!("Error sending comment to issue: {}", e);
+            }
         } else {
             let json_body = serde_json::json!({
-                "title": line,
-                "body": body,
-                "labels": ["NSFW Adult Material"],
-                "milestone": 4,
-                "state": "closed",
-                "state_reason": "completed"
-            });
+            "title": line,
+            "body": body,
+            "labels": ["NSFW Adult Material"],
+            "milestone": 4,
+            "state": "closed",
+            "state_reason": "completed"
+        });
 
             for _ in 0..MAX_RETRIES {
-                let response = Client::new()
+                match Client::new()
                     .post(&format!("https://api.github.com/repos/{REPO}/issues"))
                     .header("Accept", "application/vnd.github+json")
                     .header("Authorization", format!("Bearer {}", github_token))
                     .json(&json_body)
                     .send()
-                    .unwrap();
-
-                if response.status().is_success() {
-                    let response_json: Value = response.json().unwrap();
-                    let title = response_json["title"].as_str().unwrap().to_string();
-                    let html_url = response_json["html_url"].as_str().unwrap().to_string();
-                    writer.write_record(&[title, html_url]).unwrap();
-                    break;
-                } else {
-                    thread::sleep(RETRY_DELAY);
+                {
+                    Ok(response) => {
+                        if response.status().is_success() {
+                            match response.json::<Value>() {
+                                Ok(response_json) => {
+                                    let title = response_json["title"].as_str().unwrap().to_string();
+                                    let html_url = response_json["html_url"].as_str().unwrap().to_string();
+                                    writer.write_record(&[title, html_url]).unwrap();
+                                    break;
+                                }
+                                Err(e) => eprintln!("Error parsing response JSON: {}", e),
+                            }
+                        } else {
+                            eprintln!("Failed to create issue: {}", response.status());
+                            thread::sleep(RETRY_DELAY);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error sending request to create issue: {}", e);
+                        thread::sleep(RETRY_DELAY);
+                    }
                 }
             }
         }
     }
-
-    std::fs::remove_file(in_file).unwrap();
-}
 
 fn capture_screenshot(url: &str, file_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let options = LaunchOptionsBuilder::default()
