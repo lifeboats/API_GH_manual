@@ -192,9 +192,9 @@ fn capture_screenshot(url: &str, file_path: &PathBuf) -> Result<(), Box<dyn std:
     };
     let png_data = tab.capture_screenshot(
         headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
-        Some(viewport), // Pass the viewport here
-        true, // Capture from surface
-        None // No quality specified
+        Some(viewport), // Option<Viewport>
+        None, // Option<u8> for quality
+        true // bool
     )?;
     std::fs::write(file_path, png_data)?;
     Ok(())
