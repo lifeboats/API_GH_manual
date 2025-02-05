@@ -53,10 +53,16 @@ fn main() {
     let github_token = get_github_token(&config_path).expect("Failed to retrieve GITHUB_TOKEN");
 
     // Create output file with header if it doesn't exist
-    let mut writer = WriterBuilder::new().from_path(out_file).unwrap();
+    let mut writer = WriterBuilder::new().from_path(&out_file).unwrap_or_else(|_| {
+        eprintln!("Could not create output file: {}", out_file);
+        std::process::exit(1);
+    });
     writer.write_record(&["Title", "Issue link"]).unwrap();
 
-    let mut reader = ReaderBuilder::new().from_path(in_file).unwrap();
+    let mut reader = ReaderBuilder::new().from_path(&in_file).unwrap_or_else(|_| {
+        eprintln!("Could not open input file: {}", in_file);
+        std::process::exit(1);
+    });
     let records: Vec<_> = reader.records().collect();
 
     // Create a temporary file for the screenshot
@@ -89,7 +95,6 @@ fn main() {
                     "https://api.github.com/search/issues?q={line}+type:issue&sort=indexed"
                 ))
                 .header("Accept", "application/vnd.github.text-match+json")
-                .bearer_auth(&github_token)
                 .send()
                 .unwrap()
                 .text()
@@ -100,11 +105,27 @@ fn main() {
                     "https://api.github.com/search/issues?q={line}%20in:title%20type:issue%20repo:{REPO}"
                 ))
                 .header("Accept", "application/vnd.github.text-match+json")
+                .header("User-Agent", "MyNewApp")
                 .bearer_auth(&github_token)
                 .send()
                 .unwrap()
                 .text()
                 .unwrap();
+
+            if existing_issue.is_empty() {
+                eprintln!("Received empty response for existing issues.");
+            } else {
+                match serde_json::from_str::<Value>(&existing_issue) {
+                    Ok(json) => {
+                        let issue_url = json["url"].as_str().unwrap().to_string();
+                        // Use issue_url
+                    }
+                    Err(e) => {
+                        eprintln!("Error parsing existing issue JSON: {}", e);
+                        eprintln!("Response: {}", existing_issue);
+                    }
+                }
+            }
 
             // Validate and sanitize the line input before using it in path value creation
             let sanitized_line = sanitize_input(&line);
@@ -164,7 +185,7 @@ fn main() {
 
             if let Err(e) = Client::new()
                 .post(&format!("{issue_url}/comments"))
-                .header("Authorization", format!("Bearer {}", github_token))
+                .bearer_auth(&github_token)
                 .header("Accept", "application/vnd.github+json")
                 .json(&serde_json::json!({ "body": body }))
                 .send()
@@ -173,19 +194,19 @@ fn main() {
             }
         } else {
             let json_body = serde_json::json!({
-            "title": line,
-            "body": body,
-            "labels": ["NSFW Adult Material"],
-            "milestone": 4,
-            "state": "closed",
-            "state_reason": "completed"
-        });
+                "title": line,
+                "body": body,
+                "labels": ["NSFW Adult Material"],
+                "milestone": 4,
+                "state": "closed",
+                "state_reason": "completed"
+            });
 
             for _ in 0..MAX_RETRIES {
                 match Client::new()
                     .post(&format!("https://api.github.com/repos/{REPO}/issues"))
                     .header("Accept", "application/vnd.github+json")
-                    .header("Authorization", format!("Bearer {}", github_token))
+                    .bearer_auth(&github_token)
                     .json(&json_body)
                     .send()
                 {
@@ -213,6 +234,11 @@ fn main() {
             }
         }
     }
+
+    // if !records.is_empty() {
+    //     std::fs::remove_file(in_file).unwrap();
+    // }
+}
 
 fn capture_screenshot(url: &str, file_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let options = LaunchOptionsBuilder::default()
@@ -263,6 +289,9 @@ fn get_github_token(config_path: &str) -> Result<String, Box<dyn std::error::Err
     let mut file = File::open(config_path)?;
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
+    if contents.trim().is_empty() {
+        return Err("Empty JSON content".into());
+    }
     let json: Value = serde_json::from_str(&contents)?;
     let token = json["GITHUB_TOKEN"].as_str().ok_or("GITHUB_TOKEN not found")?.to_string();
     Ok(token)
