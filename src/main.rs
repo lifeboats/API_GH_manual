@@ -1,3 +1,4 @@
+use clap::{App, Arg};
 use csv::ReaderBuilder;
 use csv::WriterBuilder;
 use headless_chrome::{Browser, LaunchOptionsBuilder};
@@ -12,23 +13,50 @@ use std::env;
 use std::path::PathBuf;
 use regex::Regex;
 
-const IN_FILE: &str = "/home/spirillen/Downloads/newIssues.csv";
-const OUT_FILE: &str = "/home/spirillen/Downloads/issues.csv";
 const MAX_RETRIES: usize = 3;
 const RETRY_DELAY: Duration = Duration::from_secs(5);
 const REPO: &str = "mypdns/matrix";
 
 fn main() {
+    let matches = App::new("API_GH_manual")
+        .version("0.1.0")
+        .author("Spirillen <spirillen@danwin1210.de>")
+        .about("A program to take screenshots of websites and upload them to GitHub issues.")
+        .arg(Arg::new("infile")
+            .short('i')
+            .long("infile")
+            .value_name("FILE")
+            .about("Sets the input file")
+            .takes_value(true))
+        .arg(Arg::new("outfile")
+            .short('o')
+            .long("outfile")
+            .value_name("FILE")
+            .about("Sets the output file")
+            .takes_value(true))
+        .arg(Arg::new("version")
+            .short('v')
+            .long("version")
+            .about("Prints version information"))
+        .arg(Arg::new("help")
+            .short('h')
+            .long("help")
+            .about("Prints help information"))
+        .get_matches();
+
+    let in_file = matches.value_of("infile").unwrap_or("data/newIssues.csv");
+    let out_file = matches.value_of("outfile").unwrap_or("data/issues.csv");
+
     // Load GITHUB_TOKEN from config file
     let home_dir = env::var("HOME").expect("Could not find home directory");
     let config_path = format!("{}/.config/myPrivacyDNS/config.user.json", home_dir);
     let github_token = get_github_token(&config_path).expect("Failed to retrieve GITHUB_TOKEN");
 
     // Create output file with header if it doesn't exist
-    let mut writer = WriterBuilder::new().from_path(OUT_FILE).unwrap();
+    let mut writer = WriterBuilder::new().from_path(out_file).unwrap();
     writer.write_record(&["Title", "Issue link"]).unwrap();
 
-    let mut reader = ReaderBuilder::new().from_path(IN_FILE).unwrap();
+    let mut reader = ReaderBuilder::new().from_path(in_file).unwrap();
     let records: Vec<_> = reader.records().collect();
 
     // Create a temporary file for the screenshot
@@ -102,8 +130,7 @@ fn main() {
                 ```CSV\nnull\n```\n\n\
                 ### Screenshots\n\n\
                 <details><summary>Screenshot (click to expand)</summary>\n\n\
-                {}\
-                \n\n</details>\n\n\
+                {}\n\n</details>\n\n\
                 ### Links to external sources\n\n\
                 {}\n\n\
                 ### Name servers\n\n\
@@ -123,7 +150,7 @@ fn main() {
 
     drop(tx);
 
-    let mut writer = WriterBuilder::new().from_path(OUT_FILE).unwrap();
+    let mut writer = WriterBuilder::new().from_path(out_file).unwrap();
 
     for (line, body, existing_issue) in rx {
         if !existing_issue.is_empty() {
@@ -171,7 +198,7 @@ fn main() {
         }
     }
 
-    std::fs::remove_file(IN_FILE).unwrap();
+    std::fs::remove_file(in_file).unwrap();
 }
 
 fn capture_screenshot(url: &str, file_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
@@ -192,8 +219,6 @@ fn capture_screenshot(url: &str, file_path: &PathBuf) -> Result<(), Box<dyn std:
     std::fs::write(file_path, png_data)?;
     Ok(())
 }
-
-
 
 fn upload_screenshot(screenshot_file: &PathBuf, github_token: &str) -> Option<String> {
     for _ in 0..MAX_RETRIES {
