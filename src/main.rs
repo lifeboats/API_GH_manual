@@ -1,6 +1,6 @@
 use csv::ReaderBuilder;
 use csv::WriterBuilder;
-use headless_chrome::{Browser, LaunchOptionsBuilder, protocol::page::{ScreenshotFormat, Viewport}};
+use headless_chrome::{Browser, LaunchOptionsBuilder};
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::fs::File;
@@ -168,44 +168,19 @@ fn main() {
     std::fs::remove_file(IN_FILE).unwrap();
 }
 
-for record in records {
-let record = record.unwrap();
-let line = record.get(0).unwrap().to_string();
-let tx = tx.clone();
-
-let github_token = github_token.clone();
-let screenshot_file = screenshot_file.clone(); // Clone the path for each thread
-thread::spawn(move || {
-// Your existing code...
-let screenshot_result = capture_screenshot(&line, &screenshot_file);
-// Rest of your code...
-});
-}
-
-// In the capture_screenshot function
 fn capture_screenshot(url: &str, file_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     let options = LaunchOptionsBuilder::default()
         .headless(true)
-        .build()?;
+        .build()
+        .unwrap();
     let browser = Browser::new(options)?;
     let tab = browser.new_tab()?;
     tab.navigate_to(url)?;
     tab.wait_until_navigated()?;
-
-    // Create a viewport
-    let viewport = Viewport {
-        x: 0.0,
-        y: 0.0,
-        width: 800.0,
-        height: 600.0,
-        scale: 1.0,
-    };
-
-    let png_data = tab.capture_screenshot(ScreenshotFormat::PNG, Some(viewport), None, true)?;
+    let png_data = tab.capture_screenshot(headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png, None)?;
     std::fs::write(file_path, png_data)?;
     Ok(())
 }
-
 
 fn upload_screenshot(screenshot_file: &std::path::Path, github_token: &str) -> Option<String> {
     for _ in 0..MAX_RETRIES {
